@@ -4318,54 +4318,104 @@ window.switchTab=function(t){
   if(s)renderUpd();
 };
 
-/* ---------- telepon & video call (WebRTC via PeerJS) ---------- */
+/* ---------- telepon & video call (fix) ---------- */
 const cu=document.createElement('div');cu.id='call-ui';
-cu.innerHTML='<video id="c-remote" autoplay playsinline></video><video id="c-local" autoplay playsinline muted></video><div id="c-info"><img id="c-ava" alt=""><h2 id="c-name"></h2><p id="c-stat"></p></div><div id="c-btns"><button class="cb b-call" id="c-mute"><i class="fa-solid fa-microphone"></i></button><button class="cb b-call" id="c-cam"><i class="fa-solid fa-video"></i></button><button class="cb red b-call" id="c-end"><i class="fa-solid fa-phone-slash"></i></button><button class="cb red b-in" id="c-rej"><i class="fa-solid fa-phone-slash"></i></button><button class="cb grn b-in" id="c-acc"><i class="fa-solid fa-phone"></i></button></div>';
+cu.innerHTML='<video id="c-remote" autoplay playsinline muted></video><audio id="c-audio" autoplay playsinline></audio><video id="c-local" autoplay playsinline muted></video><div id="c-info"><img id="c-ava" alt=""><h2 id="c-name"></h2><p id="c-stat"></p></div><div id="c-btns"><button class="cb b-call" id="c-mute"><i class="fa-solid fa-microphone"></i></button><button class="cb b-call" id="c-cam"><i class="fa-solid fa-video"></i></button><button class="cb red b-call" id="c-end"><i class="fa-solid fa-phone-slash"></i></button><button class="cb red b-in" id="c-rej"><i class="fa-solid fa-phone-slash"></i></button><button class="cb grn b-in" id="c-acc"><i class="fa-solid fa-phone"></i></button></div>';
 $('app').appendChild(cu);
+const bs=document.createElement('style');
+bs.textContent='#c-name i{font-size:20px;margin-left:6px}#call-ui.act.vid #c-remote{opacity:1}';
+document.head.appendChild(bs);
 const hb=document.querySelector('#chat-view .chat-hdr > div:last-child');
 hb.insertAdjacentHTML('afterbegin','<button class="hdr-btn" id="h-vid"><i class="fa-solid fa-video"></i></button><button class="hdr-btn" id="h-tel"><i class="fa-solid fa-phone"></i></button>');
-let peer=null,cur=null,pending=null,ls=null,tick=null,ring=null,to=null,sec=0,pi=false,actx=null;
+
+let peer=null,cur=null,pending=null,ls=null,tick=null,ring=null,to=null,sec=0,pi=false,actx=null,peerUid=null;
 const PID=id=>'xchatapp-'+id;
-const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'}]};
+const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]};
 function loadPeer(){return new Promise((ok,no)=>{if(window.Peer)return ok();const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js';s.onload=ok;s.onerror=no;document.head.appendChild(s)})}
 async function initPeer(){
   if(peer||pi||!myId)return;pi=true;
   try{await loadPeer();peer=new Peer(PID(myId),{config:ICE})}catch(e){pi=false;return}
-  peer.on('call',c=>{if(cur||pending){c.close();return}pending=c;ui('in',c.peer.replace('xchatapp-',''),!!(c.metadata&&c.metadata.video));startRing()});
-  peer.on('error',e=>{if(e.type==='peer-unavailable')endCall('Tidak dapat dihubungi')});
+  peer.on('call',c=>{
+    if(cur||pending){c.close();return}
+    pending=c;peerUid=c.peer.replace('xchatapp-','');
+    ui('in',peerUid,!!(c.metadata&&c.metadata.video));startRing(true);
+  });
+  peer.on('error',e=>{
+    if(e.type==='peer-unavailable')endCall('Tidak dapat dihubungi');
+    else if(e.type==='unavailable-id'||e.type==='network'||e.type==='server-error'||e.type==='socket-error'){try{peer.destroy()}catch(_){}peer=null;pi=false}
+  });
+  peer.on('close',()=>{peer=null;pi=false});
   peer.on('disconnected',()=>{try{peer.reconnect()}catch(e){}});
 }
 setInterval(initPeer,3000);
+
 const who=uid=>{const c=contacts.find(x=>x.id===uid),u=binData.users[uid]||{},n=CL((c&&c.name)||u.name||uid);return{n,p:u.photo||avatarUrl(n)}};
-const media=v=>navigator.mediaDevices.getUserMedia({audio:true,video:v?{facingMode:'user'}:false});
+
+async function media(v){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw{name:'NoAPI'};
+  const audio={echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+  return navigator.mediaDevices.getUserMedia({audio,video:v?{facingMode:'user',width:{ideal:640},height:{ideal:480}}:false});
+}
+function permMsg(e){
+  const n=e&&e.name;
+  if(n==='NoAPI')return 'Panggilan butuh koneksi HTTPS';
+  if(n==='NotAllowedError'||n==='SecurityError')return 'Izin mikrofon/kamera ditolak. Aktifkan di Pengaturan HP > Aplikasi > Izin';
+  if(n==='NotFoundError')return 'Mikrofon/kamera tidak ditemukan';
+  if(n==='NotReadableError')return 'Mikrofon/kamera sedang dipakai aplikasi lain';
+  return 'Gagal akses mikrofon/kamera';
+}
+
 function ui(state,uid,video){
   const w=who(uid);
   cu.className='show '+state+(video?' vid':' aud');
-  $('c-name').textContent=w.n;$('c-ava').src=w.p;
+  $('c-name').innerHTML=w.n+badgeHtml(uid);   /* centang biru/hijau tampil terus */
+  $('c-ava').src=w.p;
   $('c-stat').textContent=state==='in'?T(video?'Panggilan video masuk':'Panggilan suara masuk'):T('Memanggil...');
   $('c-mute').className='cb b-call';$('c-cam').className='cb b-call';
   $('c-mute').innerHTML='<i class="fa-solid fa-microphone"></i>';$('c-cam').innerHTML='<i class="fa-solid fa-video"></i>';
   if(ls&&video)$('c-local').srcObject=ls;
 }
-function tone(){try{actx=actx||new(window.AudioContext||window.webkitAudioContext)();actx.resume();const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain();o.connect(g);g.connect(actx.destination);o.frequency.value=440;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.2,t+.05);g.gain.exponentialRampToValueAtTime(.0001,t+.6);o.start(t);o.stop(t+.65)}catch(e){}}
-function startRing(){stopRing();tone();try{navigator.vibrate&&navigator.vibrate([400,200,400])}catch(e){}ring=setInterval(()=>{tone();try{navigator.vibrate&&navigator.vibrate([400,200,400])}catch(e){}},2200)}
+function tone(f){try{actx=actx||new(window.AudioContext||window.webkitAudioContext)();actx.resume();const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain();o.connect(g);g.connect(actx.destination);o.frequency.value=f||440;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.2,t+.05);g.gain.exponentialRampToValueAtTime(.0001,t+.6);o.start(t);o.stop(t+.65)}catch(e){}}
+function startRing(incoming){
+  stopRing();
+  const go=()=>{tone(incoming?440:400);if(incoming){try{navigator.vibrate&&navigator.vibrate([400,200,400])}catch(e){}}};
+  go();ring=setInterval(go,incoming?2200:3000);
+}
 function stopRing(){clearInterval(ring);ring=null;try{navigator.vibrate&&navigator.vibrate(0)}catch(e){}}
 const fmtT=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+const playAll=()=>{['c-remote','c-audio'].forEach(id=>{const el=$(id);if(el&&el.srcObject){const p=el.play();p&&p.catch&&p.catch(()=>{})}})};
+cu.addEventListener('click',playAll);   /* kalau WebView blok autoplay, tap layar = suara nyala */
+
 function connected(rs){
   clearTimeout(to);stopRing();
-  $('c-remote').srcObject=rs;cu.classList.remove('in','out');cu.classList.add('act');
+  const v=$('c-remote'),a=$('c-audio');
+  if(v.srcObject!==rs){v.srcObject=rs;a.srcObject=rs}
+  v.muted=true;a.muted=false;a.volume=1;   /* video dimute, suara lewat <audio> biar pasti bunyi */
+  cu.classList.remove('in','out');cu.classList.add('act');
+  playAll();setTimeout(playAll,300);setTimeout(playAll,1000);
   if(tick)return;sec=0;$('c-stat').textContent='00:00';
   tick=setInterval(()=>{sec++;$('c-stat').textContent=fmtT(sec)},1000);
 }
-function wire(c){c.on('stream',connected);c.on('close',()=>endCall());c.on('error',()=>endCall('Panggilan gagal'))}
+function wire(c){
+  c.on('stream',connected);
+  c.on('close',()=>endCall());
+  c.on('error',()=>endCall('Panggilan gagal'));
+  try{
+    c.peerConnection.addEventListener('track',e=>{if(e.streams&&e.streams[0])connected(e.streams[0])});
+    c.peerConnection.addEventListener('iceconnectionstatechange',()=>{
+      const s=c.peerConnection.iceConnectionState;
+      if(s==='failed'||s==='closed')endCall('Koneksi terputus');
+    });
+  }catch(e){}
+}
 function endCall(msg){
   clearTimeout(to);stopRing();clearInterval(tick);tick=null;
   const was=cu.classList.contains('show');
   try{cur&&cur.close()}catch(e){}
   try{pending&&pending.close()}catch(e){}
   if(ls)ls.getTracks().forEach(t=>t.stop());
-  ls=null;cur=null;pending=null;
-  $('c-remote').srcObject=null;$('c-local').srcObject=null;
+  ls=null;cur=null;pending=null;peerUid=null;
+  $('c-remote').srcObject=null;$('c-audio').srcObject=null;$('c-local').srcObject=null;
   cu.className='';
   if(was)toast(msg||'Panggilan berakhir');
 }
@@ -4373,8 +4423,8 @@ async function startCall(video){
   if(cur||pending||currentChatType!=='user'||currentChatId===myId)return;
   if(!peer)return toast('Sistem panggilan belum siap, coba lagi');
   const uid=currentChatId;
-  try{ls=await media(video)}catch(e){return toast('Izin mikrofon/kamera ditolak')}
-  ui('out',uid,video);
+  try{ls=await media(video)}catch(e){return toast(permMsg(e),5000)}
+  peerUid=uid;ui('out',uid,video);startRing(false);
   cur=peer.call(PID(uid),ls,{metadata:{video}});
   wire(cur);
   to=setTimeout(()=>endCall('Tidak dijawab'),45000);
@@ -4384,10 +4434,13 @@ $('h-vid').onclick=()=>startCall(true);
 $('c-acc').onclick=async()=>{
   const c=pending;if(!c)return;const v=!!(c.metadata&&c.metadata.video);
   stopRing();
-  try{ls=await media(v)}catch(e){try{c.close()}catch(_){}pending=null;cu.className='';return toast('Izin mikrofon/kamera ditolak')}
-  cur=c;pending=null;c.answer(ls);wire(c);
+  try{ls=await media(v)}catch(e){try{c.close()}catch(_){}pending=null;cu.className='';return toast(permMsg(e),5000)}
+  cur=c;pending=null;
+  cu.classList.replace('in','out');
+  c.answer(ls);wire(c);
   if(v)$('c-local').srcObject=ls;
   $('c-stat').textContent=T('Berdering...');
+  playAll();
 };
 $('c-rej').onclick=()=>endCall('Panggilan berakhir');
 $('c-end').onclick=()=>endCall('Panggilan berakhir');
